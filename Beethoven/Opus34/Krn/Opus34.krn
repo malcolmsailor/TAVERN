@@ -2704,6 +2704,8 @@
 .	128bb-
 .	128ccc
 .	128ddd
+.	128r
+!	!MIES: I added the preceding rest so there would be 8 128th notes to the 16th
 (16FF	(96fffLLL
 .	96eee
 .	96fffJJJ
