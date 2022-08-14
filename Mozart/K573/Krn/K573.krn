@@ -1886,7 +1886,7 @@
 .	16g
 .	16ggJJ
 *END	*END
-*clefF2	*clefG2
+*clefF4	*clefG2
 =173	=173
 16DLL	(2a 2ff# 2aa
 16d	.
@@ -1938,7 +1938,7 @@
 8DD)	4r
 8r	.
 *END	*END
-*clefF2	*clefG2
+*clefF4	*clefG2
 =177:|!|:	=177:|!|:
 *^	*
 (8c#L	[2.A	16eLL
@@ -2045,7 +2045,7 @@
 .	16g
 .	16ggJJ
 *END	*END
-*clefF2	*clefG2
+*clefF4	*clefG2
 =185	=185
 *^	*
 (8f#L	[2d	16aLL
@@ -2101,7 +2101,7 @@
 .	16g
 .	16ggJJ
 *END	*END
-*clefF2	*clefG2
+*clefF4	*clefG2
 =189	=189
 16DLL	(2a 2ff# 2aa
 16d	.
@@ -2491,7 +2491,7 @@
 .	48ff#
 .	48ggJJJ)
 *END	*END
-*clefF2	*clefG2
+*clefF4	*clefG2
 =213	=213
 32r	[2ff# [2aa
 (32DLLL	.
