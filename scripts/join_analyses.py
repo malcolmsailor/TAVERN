@@ -112,7 +112,7 @@ def get_outpath_from_joined_dir(joined_dir: str, annotator: str) -> str:
     return os.path.join(OUT_DIR, basename)
 
 
-def join_files():
+def join_files(check=True):
     joined = (
         sh.fd("Joined", TAVERN_DIR, _tty_out=False)
         .stdout.decode()
@@ -125,9 +125,7 @@ def join_files():
         accumulator = []
         for i, hcontents in enumerate(file_contents):
             error = None
-            if i == 0:
-                pass
-            else:
+            if i != 0:
                 if hcontents.pickup:
                     try:
                         assert prev_hcontents.inc_final
@@ -163,14 +161,10 @@ def join_files():
                     print(f"Error: {error}")
                     print("    Prev: " + prev_hcontents.humdrum_file)
                     print("    Next: " + hcontents.humdrum_file)
-            # I think we can be confident that key annotations
-            #   only change at the beginning of variations, but it is
-            #   faster to just add them to all segments
-            hcontents.add_key_annots()
             if i == 0:
                 accumulator.append(hcontents.preamble)
             else:
-                hcontents.add_first_ts_at_first_measure_line()
+                hcontents.move_first_ts_to_first_measure_line()
             accumulator.append(hcontents.body)
             prev_hcontents = hcontents
         body = "\n".join(accumulator)
@@ -179,11 +173,103 @@ def join_files():
         print(f"Writing {outpath}")
         with open(outpath, "w") as outf:
             outf.write(body)
+    if not check:
+        return
+    for f in os.listdir(OUT_DIR):
+        if not f.endswith(".krn"):
+            continue
+        try:
+            res = sh.extractx("-i", "'**kern'", os.path.join(OUT_DIR, f))
+        except sh.ErrorReturnCode_1:
+            import traceback, sys
+
+            exc_type, exc_value, exc_traceback = sys.exc_info()
+            print(f)
+            print(exc_value.stdout.decode())
+        except sh.SignalException_SIGABRT:
+            print("Abort trap: ", f)
 
 
 def close_body(body):
     n_spines_at_end = body.rsplit("\n", maxsplit=1)[-1].count("\t") + 1
-    return body + "\n" + "\t".join("*-" for _ in range(n_spines_at_end))
+    double_bars = "\t".join("==" for _ in range(n_spines_at_end))
+    spine_endings = "\t".join("*-" for _ in range(n_spines_at_end))
+    # 'humdrum' syntax checker gives error if last line is not empty
+    return "\n".join([body, double_bars, spine_endings, ""])
+
+
+def replace_cadential_64_chords(overwrite=True):
+    """Also replaces common-tone diminished (Cto7) annotations."""
+    for f in os.listdir(OUT_DIR):
+        if not f.endswith(".krn"):
+            continue
+        print(f"Replacing 6/4 chords in {f}")
+        f = os.path.join(OUT_DIR, f)
+        accumulator = []
+        mode = None
+        with open(f, "r") as inf:
+            for line in inf:
+                m = re.match(r"(?:\*(?P<letter>[A-Ga-g])[#-]*:\t?)+$", line)
+                if m:
+                    letter = m.group("letter")
+                    mode = letter.isupper()
+                    accumulator.append(line)
+                    continue
+                m = re.match(
+                    r"""(?P<function>\S+\t) # 'function' spine
+                    (?P<prefix>\S+) # duration probably
+                    Cc # Cadential 64
+                    (?P<postfix>\S*) # could be /ii etc.
+                    (?P<remainder>\t.*)""",
+                    line,
+                    flags=re.VERBOSE,
+                )
+                if m:
+                    if not m.group("postfix"):
+                        mode_here = mode
+                    else:
+                        if m1 := re.search("[iIvV]", m.group("postfix")):
+                            mode_here = m1.group(0).isupper()
+                        else:
+                            mode_here = mode
+                    cad64 = "Ic" if mode_here else "ic"
+                    accumulator.append(
+                        m.group("function")
+                        + m.group("prefix")
+                        + cad64
+                        + m.group("postfix")
+                        + m.group("remainder")
+                        # match doesn't include terminal line break but other
+                        #  lines do
+                        + "\n"
+                    )
+                    continue
+                m = re.match(
+                    r"""(?P<function>\S+\t) # 'function' spine
+                    (?P<prefix>\S+) # duration probably
+                    Cto7 # common-tone dim7
+                    (?P<postfix>\S*) # could be /ii etc.
+                    (?P<remainder>\t.*)""",
+                    line,
+                    flags=re.VERBOSE,
+                )
+                if m:
+                    accumulator.append(
+                        m.group("function")
+                        + m.group("prefix")
+                        + "#iio7"
+                        + m.group("postfix")
+                        + m.group("remainder")
+                        # match doesn't include terminal line break but other
+                        #  lines do
+                        + "\n"
+                    )
+                    continue
+                accumulator.append(line)
+        out = "".join(accumulator)
+        if overwrite:
+            with open(f, "w") as outf:
+                outf.write(out)
 
 
 class HumdrumContents:
@@ -198,38 +284,60 @@ class HumdrumContents:
         self.pickup, self.inc_final = has_pickup_and_incomplete_final_measure(
             self.measure_durs
         )
-        # TODO need to fix: kern doesn't need to start with '='
-        # in fact I think we want to include everything after the spine declarations
-        # then later move the time signature
-        self.preamble, remainder = re.split(r"\n(?==)", f_contents, maxsplit=1)
-        self.sigs = sigs = get_sigs(self.preamble)
+        preamble, spine_declarations, remainder = re.split(
+            r"(^(?:\*\*\w+\t?)+$)", f_contents, maxsplit=1, flags=re.MULTILINE
+        )
+        # self.preamble, remainder = re.split(r"\n(?==)", f_contents, maxsplit=1)
+        self.preamble = preamble.strip() + "\n" + spine_declarations.strip()
         remainder, self.coda = re.split(r"(?:\*-\t?)+", remainder)
         # in some files spines begin with "=-" and end with "==";
         # we want to strip this out
         remainder = re.sub(r"^(=-\t?)+", "", remainder, re.MULTILINE)
         remainder = re.sub(r"(==\t?)+?", "", remainder)
+        self.sigs = get_sigs(remainder)
         self.body = remainder.strip()
 
-    def add_first_ts_at_first_measure_line(self):
+    # def add_first_ts_at_first_measure_line(self):
+
+    #     m = re.search(r"^=[^-].*\n", self.body, re.MULTILINE)
+    #     n_spines_here = m.group(0).count("\t") + 1
+    #     ts = (
+    #         "\t".join(self.sigs["time_sig"] for _ in range(n_spines_here))
+    #         + "\n"
+    #     )
+    #     self.body = self.body[: m.end()] + ts + self.body[m.end() :]
+
+    def move_first_ts_to_first_measure_line(self):
         """On all segments except the first, we want to move the ts to just
         *after* the first barline so that the previous measure will
         sum up to the right amount and the segment will have the right ts."""
-        m = re.search(r"^=[^-].*\n", self.body, re.MULTILINE)
-        n_spines_here = m.group(0).count("\t") + 1
-        ts = (
-            "\t".join(self.sigs["time_sig"] for _ in range(n_spines_here))
-            + "\n"
+        before_ts, ts, after_ts = re.split(
+            r"(^(?:\*M\d\S+\t?)+$)", self.body, maxsplit=1, flags=re.MULTILINE
         )
-        self.body = self.body[: m.end()] + ts + self.body[m.end() :]
-
-    def add_key_annots(self):
+        before_bl, bl, after_bl = re.split(
+            r"(^(?:=[^-]\S*\t?)+$)", after_ts, maxsplit=1, flags=re.MULTILINE
+        )
+        # Need to make sure there are the right number of ts tokens
+        ts = ts.split("\t", maxsplit=1)[0]
+        ts = "\t".join(ts for _ in range(bl.count("\t") + 1))
         self.body = "\n".join(
             [
-                "\t".join([self.sigs["key_sig"]] * self.n_spines),
-                "\t".join([self.sigs["key_annot"]] * self.n_spines),
-                self.body,
+                before_ts.strip(),
+                before_bl.strip(),
+                bl.strip(),
+                ts.strip(),
+                after_bl.strip(),
             ]
         )
+
+    # def add_key_annots(self):
+    #     self.body = "\n".join(
+    #         [
+    #             "\t".join([self.sigs["key_sig"]] * self.n_spines),
+    #             "\t".join([self.sigs["key_annot"]] * self.n_spines),
+    #             self.body,
+    #         ]
+    #     )
 
 
 # Tests
@@ -257,6 +365,8 @@ def get_joined_kern_files() -> t.List[str]:
 def test_humdrum_contents():
     files = get_joined_kern_files()
     for f in files:
+        if "M613_00_03c_b" not in f:
+            continue
         try:
             h = HumdrumContents(f)
         except subprocess.CalledProcessError:
@@ -336,16 +446,5 @@ def test_join_files():
 
 
 if __name__ == "__main__":
-    # verify_spine_types()
-    test_join_files()
-    # test_humdrum_contents()
-
-    # dir_ = "Mozart/K025/Joined/"
-    # humdrum_files = [
-    #     os.path.join(TAVERN_DIR, dir_, p)
-    #     for p in os.listdir(os.path.join(TAVERN_DIR, dir_))
-    # ]
-    # humdrum_files.sort()
-    # for i, f in enumerate(humdrum_files):
-    #     print(f)
-    #     HumdrumContents(f)
+    join_files()
+    replace_cadential_64_chords()
